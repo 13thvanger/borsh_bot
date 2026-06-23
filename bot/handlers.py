@@ -1,9 +1,26 @@
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
+from bot.ai_agent import check_borsh_image, telegram_photo_to_data_url
+from bot.config import settings
 from bot.db import SessionLocal
-from bot.services import add_borsh, display_name, find_user_in_chat, get_top, get_user_stat, set_custom_username, upsert_chat, upsert_user, get_or_create_stat
+from bot.messages import random_message
+from bot.services import (
+    display_name,
+    find_user_in_chat,
+    get_or_create_stat,
+    get_recent_photo_candidates,
+    get_top,
+    get_user_stat,
+    photo_already_confirmed,
+    remember_photo_message,
+    save_borsh_proof_and_increment,
+    add_borsh,
+    set_custom_username,
+    upsert_chat,
+    upsert_user,
+)
 
 router = Router()
 
@@ -12,14 +29,17 @@ HELP_TEXT = """
 🍲 БОРЩЕБОТ — групповой учет борщей
 
 Команды:
-/borsh — съел борщ, +1 в текущем чате
+/borsh — добавить +1 борщ. Если ИИ-проверка включена, бот проверит одно из 5 последних твоих фото.
 /stat — топ-10 борщеедов
 /stat 5 — топ-5 борщеедов
 /stat username — подробная статистика пользователя
 /stat 123456789 — статистика по Telegram ID
 /username vasya — задать имя для статистики
 /me — моя статистика
+/health — состояние бота, БД и ИИ-проверки
 
+Если AGENT_URL и AGENT_API_KEY не заданы, ИИ-проверка отключается и /borsh засчитывает борщ без фото.
+Одно и то же фото нельзя засчитать дважды.
 Статистика считается отдельно для каждого чата.
 """.strip()
 
@@ -29,13 +49,106 @@ async def help_cmd(message: Message) -> None:
     await message.answer(HELP_TEXT)
 
 
+@router.message(lambda message: bool(message.photo))
+async def photo_message(message: Message) -> None:
+    if not message.from_user or not message.photo:
+        return
+    biggest_photo = message.photo[-1]
+    async with SessionLocal() as session:
+        await remember_photo_message(
+            session=session,
+            tg_chat=message.chat,
+            tg_user=message.from_user,
+            message_id=message.message_id,
+            file_id=biggest_photo.file_id,
+            file_unique_id=biggest_photo.file_unique_id,
+            message_date=message.date,
+        )
+
+
 @router.message(Command("borsh"))
-async def borsh_cmd(message: Message) -> None:
+async def borsh_cmd(message: Message, bot: Bot) -> None:
     if not message.from_user:
         return
+
+    # Если ИИ-агент не настроен и AGENT_REQUIRED=false, работаем в режиме доверия.
+    if not settings.agent_enabled:
+        if settings.agent_required:
+            await message.answer(
+                "🤖 ИИ-проверка обязательна, но агент не настроен: "
+                f"{settings.agent_disabled_reason}. Борщ не засчитан."
+            )
+            return
+        async with SessionLocal() as session:
+            total = await add_borsh(session, message.chat, message.from_user)
+        await message.answer(random_message("bypass.txt", total=total))
+        return
+
     async with SessionLocal() as session:
-        total = await add_borsh(session, message.chat, message.from_user)
-    await message.answer(f"🍲 Засчитано! Теперь у тебя {total} борщ(ей) в этом чате. Борщевой дух крепнет!")
+        photos = await get_recent_photo_candidates(session, message.chat, message.from_user, message.message_id, limit=5)
+        if not photos:
+            await message.answer(random_message("no_photo.txt"))
+            return
+
+        saw_only_counted_photos = True
+        for photo in photos:
+            if await photo_already_confirmed(session, photo):
+                continue
+            saw_only_counted_photos = False
+
+            try:
+                data_url = await telegram_photo_to_data_url(bot, photo.telegram_file_id)
+                is_borsh, confidence, reason, raw_response = await check_borsh_image(data_url)
+            except Exception as exc:
+                await message.answer(random_message("agent_error.txt", error=f"{type(exc).__name__}: {exc}"))
+                return
+
+            total = await save_borsh_proof_and_increment(
+                session=session,
+                tg_chat=message.chat,
+                tg_user=message.from_user,
+                photo=photo,
+                command_message_id=message.message_id,
+                confirmed=is_borsh,
+                agent_response=raw_response,
+            )
+
+            if is_borsh and total is not None:
+                await message.answer(
+                    random_message("confirmed.txt", total=total, confidence=f"{confidence:.0%}", reason=reason)
+                    + f"\n\n🤖 Уверенность: {confidence:.0%}. {reason}"
+                )
+                return
+
+        if saw_only_counted_photos:
+            await message.answer(random_message("already_counted.txt"))
+            return
+        await message.answer(random_message("rejected.txt"))
+
+
+@router.message(Command("health"))
+async def health_cmd(message: Message) -> None:
+    db_ok = False
+    try:
+        async with SessionLocal() as session:
+            await upsert_chat(session, message.chat)
+            await session.commit()
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    if settings.agent_enabled:
+        ai_status = f"ENABLED, model={settings.agent_model}"
+    elif settings.agent_required:
+        ai_status = f"REQUIRED BUT DISABLED, {settings.agent_disabled_reason}"
+    else:
+        ai_status = f"DISABLED, {settings.agent_disabled_reason}; /borsh works without photo confirmation"
+
+    await message.answer(
+        "🍲 Borsh Bot health\n\n"
+        f"Database: {'OK' if db_ok else 'ERROR'}\n"
+        f"AI verification: {ai_status}"
+    )
 
 
 @router.message(Command("username"))
@@ -90,7 +203,7 @@ async def me_cmd(message: Message) -> None:
 async def send_top(message: Message, session, limit: int) -> None:
     rows = await get_top(session, message.chat, limit)
     if not rows:
-        await message.answer("🍲 Пока борщей нет. Кто первым отправит /borsh?")
+        await message.answer("🍲 Пока борщей нет. Кто первым отправит фото борща и /borsh?")
         return
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = [f"🍲 Топ-{limit} борщеедов этого чата:"]

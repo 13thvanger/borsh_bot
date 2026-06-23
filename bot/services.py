@@ -4,7 +4,7 @@ from aiogram.types import Chat as TgChat, User as TgUser
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.models import BorshEvent, Chat, ChatUserStat, User
+from bot.models import BorshEvent, BorshProof, Chat, ChatUserStat, PhotoMessage, User
 
 
 def display_name(user: User) -> str:
@@ -187,3 +187,88 @@ async def get_user_stat(session: AsyncSession, tg_chat: TgChat, user: User, stat
         "best_day": best_day[0] if best_day else None,
         "best_day_count": int(best_day[1]) if best_day else 0,
     }
+
+async def remember_photo_message(session: AsyncSession, tg_chat: TgChat, tg_user: TgUser, message_id: int, file_id: str, file_unique_id: str | None, message_date: datetime) -> None:
+    user = await upsert_user(session, tg_user)
+    chat = await upsert_chat(session, tg_chat)
+    result = await session.execute(
+        select(PhotoMessage).where(PhotoMessage.chat_id == chat.id, PhotoMessage.telegram_message_id == message_id)
+    )
+    existing = result.scalar_one_or_none()
+    if existing is None:
+        session.add(
+            PhotoMessage(
+                chat_id=chat.id,
+                user_id=user.id,
+                telegram_message_id=message_id,
+                telegram_file_id=file_id,
+                telegram_file_unique_id=file_unique_id,
+                message_date=message_date,
+            )
+        )
+    await session.commit()
+
+
+async def get_recent_photo_candidates(session: AsyncSession, tg_chat: TgChat, tg_user: TgUser, before_message_id: int, limit: int = 5) -> list[PhotoMessage]:
+    user = await upsert_user(session, tg_user)
+    chat = await upsert_chat(session, tg_chat)
+    result = await session.execute(
+        select(PhotoMessage)
+        .where(
+            PhotoMessage.chat_id == chat.id,
+            PhotoMessage.user_id == user.id,
+            PhotoMessage.telegram_message_id < before_message_id,
+        )
+        .order_by(PhotoMessage.telegram_message_id.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def photo_already_confirmed(session: AsyncSession, photo: PhotoMessage) -> bool:
+    result = await session.execute(
+        select(BorshProof.id).where(
+            BorshProof.chat_id == photo.chat_id,
+            BorshProof.user_id == photo.user_id,
+            BorshProof.photo_message_id == photo.id,
+            BorshProof.confirmed.is_(True),
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def save_borsh_proof_and_increment(
+    session: AsyncSession,
+    tg_chat: TgChat,
+    tg_user: TgUser,
+    photo: PhotoMessage,
+    command_message_id: int,
+    confirmed: bool,
+    agent_response: str,
+) -> int | None:
+    user = await upsert_user(session, tg_user)
+    chat = await upsert_chat(session, tg_chat)
+    stat = await get_or_create_stat(session, chat, user)
+
+    proof = BorshProof(
+        chat_id=chat.id,
+        user_id=user.id,
+        photo_message_id=photo.id,
+        borsh_command_message_id=command_message_id,
+        confirmed=confirmed,
+        agent_response=agent_response,
+    )
+    session.add(proof)
+
+    if not confirmed:
+        await session.commit()
+        return None
+
+    now = datetime.now(timezone.utc)
+    stat.borsh_count += 1
+    stat.last_borsh_at = now
+    if stat.first_borsh_at is None:
+        stat.first_borsh_at = now
+    session.add(BorshEvent(chat_id=chat.id, user_id=user.id))
+    await session.commit()
+    return stat.borsh_count
