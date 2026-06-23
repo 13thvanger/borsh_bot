@@ -226,12 +226,15 @@ async def get_recent_photo_candidates(session: AsyncSession, tg_chat: TgChat, tg
 
 
 async def photo_already_confirmed(session: AsyncSession, photo: PhotoMessage) -> bool:
+    # Название функции осталось старым для совместимости с handlers.py,
+    # но по смыслу проверяем любую уже выполненную экспертизу фото.
+    # И подтвержденное, и отклоненное фото нельзя отправлять на повторный подсчет,
+    # иначе PostgreSQL ловит UniqueViolationError по uq_borsh_proof_chat_user_photo.
     result = await session.execute(
         select(BorshProof.id).where(
             BorshProof.chat_id == photo.chat_id,
             BorshProof.user_id == photo.user_id,
             BorshProof.photo_message_id == photo.id,
-            BorshProof.confirmed.is_(True),
         )
     )
     return result.scalar_one_or_none() is not None
@@ -249,6 +252,17 @@ async def save_borsh_proof_and_increment(
     user = await upsert_user(session, tg_user)
     chat = await upsert_chat(session, tg_chat)
     stat = await get_or_create_stat(session, chat, user)
+
+    existing_proof = await session.scalar(
+        select(BorshProof).where(
+            BorshProof.chat_id == chat.id,
+            BorshProof.user_id == user.id,
+            BorshProof.photo_message_id == photo.id,
+        )
+    )
+    if existing_proof is not None:
+        await session.rollback()
+        return None
 
     proof = BorshProof(
         chat_id=chat.id,
