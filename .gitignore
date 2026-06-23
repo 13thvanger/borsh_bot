@@ -1,6 +1,23 @@
+# Secrets
 .env
 .env.*
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.so
+.venv/
+venv/
+
+# Logs
+*.log
+
+# IDE
 .vscode/
 .idea/
+
+# macOS
+.DS_Store
+
+# Docker
+postgres_data/
