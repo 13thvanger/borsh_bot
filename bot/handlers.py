@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from aiogram import Bot, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
@@ -10,6 +12,7 @@ from bot.services import (
     display_name,
     find_user_in_chat,
     get_or_create_stat,
+    get_photo_by_message_id,
     get_recent_photo_candidates,
     get_top,
     get_user_stat,
@@ -29,7 +32,8 @@ HELP_TEXT = """
 🍲 БОРЩЕБОТ — групповой учет борщей
 
 Команды:
-/borsh — добавить +1 борщ. Если ИИ-проверка включена, бот проверит одно из 5 последних твоих фото.
+/borsh — добавить +1 борщ. Если ИИ-проверка включена, бот проверит твое последнее свежее фото.
+/borsh в ответ на фото — проверить именно это фото
 /stat — топ-10 борщеедов
 /stat 5 — топ-5 борщеедов
 /stat username — подробная статистика пользователя
@@ -85,44 +89,71 @@ async def borsh_cmd(message: Message, bot: Bot) -> None:
         return
 
     async with SessionLocal() as session:
-        photos = await get_recent_photo_candidates(session, message.chat, message.from_user, message.message_id, limit=5)
-        if not photos:
-            await message.answer(random_message("no_photo.txt"))
-            return
-
-        saw_only_counted_photos = True
-        for photo in photos:
-            if await photo_already_confirmed(session, photo):
-                continue
-            saw_only_counted_photos = False
-
-            try:
-                data_url = await telegram_photo_to_data_url(bot, photo.telegram_file_id)
-                is_borsh, confidence, reason, raw_response = await check_borsh_image(data_url)
-            except Exception as exc:
-                await message.answer(random_message("agent_error.txt", error=f"{type(exc).__name__}: {exc}"))
+        photo = None
+        reply = message.reply_to_message
+        if reply and reply.photo:
+            if not reply.from_user or reply.from_user.id != message.from_user.id:
+                await message.answer("Можно засчитать только свой борщ: ответь /borsh на свое фото.")
                 return
-
-            total = await save_borsh_proof_and_increment(
+            biggest_photo = reply.photo[-1]
+            await remember_photo_message(
                 session=session,
                 tg_chat=message.chat,
                 tg_user=message.from_user,
-                photo=photo,
-                command_message_id=message.message_id,
-                confirmed=is_borsh,
-                agent_response=raw_response,
+                message_id=reply.message_id,
+                file_id=biggest_photo.file_id,
+                file_unique_id=biggest_photo.file_unique_id,
+                message_date=reply.date,
             )
+            photo = await get_photo_by_message_id(session, message.chat, message.from_user, reply.message_id)
+        else:
+            cutoff = message.date - timedelta(minutes=settings.borsh_photo_window_minutes)
+            photos = await get_recent_photo_candidates(
+                session,
+                message.chat,
+                message.from_user,
+                message.message_id,
+                limit=1,
+                since=cutoff,
+            )
+            photo = photos[0] if photos else None
 
-            if is_borsh and total is not None:
-                await message.answer(
-                    random_message("confirmed.txt", total=total, confidence=f"{confidence:.0%}", reason=reason)
-                    + f"\n\n🤖 Уверенность: {confidence:.0%}. {reason}"
-                )
-                return
+        if photo is None:
+            await message.answer(random_message("no_photo.txt"))
+            return
 
-        if saw_only_counted_photos:
+        if await photo_already_confirmed(session, photo):
             await message.answer(random_message("already_counted.txt"))
             return
+
+        try:
+            data_url = await telegram_photo_to_data_url(bot, photo.telegram_file_id)
+            is_borsh, confidence, reason, raw_response = await check_borsh_image(data_url)
+        except Exception as exc:
+            await message.answer(random_message("agent_error.txt", error=f"{type(exc).__name__}: {exc}"))
+            return
+
+        total = await save_borsh_proof_and_increment(
+            session=session,
+            tg_chat=message.chat,
+            tg_user=message.from_user,
+            photo=photo,
+            command_message_id=message.message_id,
+            confirmed=is_borsh,
+            agent_response=raw_response,
+        )
+
+        if is_borsh and total is not None:
+            await message.answer(
+                random_message("confirmed.txt", total=total, confidence=f"{confidence:.0%}", reason=reason)
+                + f"\n\n🤖 Уверенность: {confidence:.0%}. {reason}"
+            )
+            return
+
+        if is_borsh and total is None:
+            await message.answer(random_message("already_counted.txt"))
+            return
+
         await message.answer(random_message("rejected.txt"))
 
 

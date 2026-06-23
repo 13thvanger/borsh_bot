@@ -1,7 +1,7 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiogram.types import Chat as TgChat, User as TgUser
-from sqlalchemy import Select, and_, case, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models import BorshEvent, BorshProof, Chat, ChatUserStat, PhotoMessage, User
@@ -209,16 +209,44 @@ async def remember_photo_message(session: AsyncSession, tg_chat: TgChat, tg_user
     await session.commit()
 
 
-async def get_recent_photo_candidates(session: AsyncSession, tg_chat: TgChat, tg_user: TgUser, before_message_id: int, limit: int = 5) -> list[PhotoMessage]:
+async def get_photo_by_message_id(
+    session: AsyncSession,
+    tg_chat: TgChat,
+    tg_user: TgUser,
+    message_id: int,
+) -> PhotoMessage | None:
     user = await upsert_user(session, tg_user)
     chat = await upsert_chat(session, tg_chat)
     result = await session.execute(
-        select(PhotoMessage)
-        .where(
+        select(PhotoMessage).where(
             PhotoMessage.chat_id == chat.id,
             PhotoMessage.user_id == user.id,
-            PhotoMessage.telegram_message_id < before_message_id,
+            PhotoMessage.telegram_message_id == message_id,
         )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_recent_photo_candidates(
+    session: AsyncSession,
+    tg_chat: TgChat,
+    tg_user: TgUser,
+    before_message_id: int,
+    limit: int = 1,
+    since: datetime | None = None,
+) -> list[PhotoMessage]:
+    user = await upsert_user(session, tg_user)
+    chat = await upsert_chat(session, tg_chat)
+    conditions = [
+        PhotoMessage.chat_id == chat.id,
+        PhotoMessage.user_id == user.id,
+        PhotoMessage.telegram_message_id < before_message_id,
+    ]
+    if since is not None:
+        conditions.append(PhotoMessage.message_date >= since)
+    result = await session.execute(
+        select(PhotoMessage)
+        .where(*conditions)
         .order_by(PhotoMessage.telegram_message_id.desc())
         .limit(limit)
     )

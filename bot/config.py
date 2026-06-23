@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     agent_model: str = "cifra48/agent"
     agent_timeout_seconds: int = 60
     agent_required: bool = False
+    borsh_photo_window_minutes: int = 15
 
     model_config = SettingsConfigDict(
         env_file=".env",
