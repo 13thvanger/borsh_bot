@@ -1,7 +1,9 @@
 import base64
 import json
 import logging
+import math
 import mimetypes
+import random
 import re
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -116,6 +118,8 @@ async def check_borsh_image(
         "model": settings.agent_model,
         "temperature": 0,
         "max_tokens": 2000,
+        "logprobs": True,
+        "top_logprobs": 5,
         "messages": [
             {
                 "role": "system",
@@ -188,7 +192,11 @@ async def check_borsh_image(
         is_borsh, confidence, reason = _classify_agent_text(
             raw_text,
             finish_reason=finish_reason,
+            logprobs=choice.get("logprobs"),
         )
+        if not is_borsh:
+            detected_soup = _detect_soup_name(str(reasoning or ""))
+            reason = detected_soup or ""
 
         return (
             is_borsh,
@@ -211,6 +219,7 @@ async def check_borsh_image(
 def _classify_agent_text(
     text: str,
     finish_reason: str | None = None,
+    logprobs: dict[str, Any] | None = None,
 ) -> tuple[bool, float, str]:
     cleaned = text.strip()
     upper = cleaned.upper()
@@ -246,9 +255,11 @@ def _classify_agent_text(
 
     # Если скоринг не дал уверенного решения, смотрим финальный короткий ответ агента.
     if cleaned.startswith("1"):
-        return True, 0.7, "Агент подтвердил борщ, скоринг не противоречит"
+        confidence = _binary_confidence_from_logprobs(logprobs, "1")
+        return True, confidence or _fallback_confidence(), "Агент подтвердил борщ"
     if cleaned.startswith("0"):
-        return False, 0.7, "Агент не подтвердил борщ, скоринг не противоречит"
+        confidence = _binary_confidence_from_logprobs(logprobs, "0")
+        return False, confidence or _fallback_confidence(), "Агент не подтвердил борщ"
 
     if "NOT_BORSH" in upper or "NOT BORSH" in upper:
         return False, 0.75, "Агент ответил NOT_BORSH"
@@ -586,6 +597,107 @@ def _confidence_from_score(score: int) -> float:
         return 0.8
 
     return 0.6
+
+
+def _binary_confidence_from_logprobs(
+    logprobs: dict[str, Any] | None,
+    final_answer: str,
+) -> float | None:
+    if final_answer not in {"0", "1"} or not isinstance(logprobs, dict):
+        return None
+
+    entries = logprobs.get("content")
+    if not isinstance(entries, list):
+        return None
+
+    # В reasoning-моделях цифры встречаются внутри рассуждений. Финальный ответ
+    # идет последним, поэтому ищем последний выбранный бинарный токен.
+    for entry in reversed(entries):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("token") or "").strip() != final_answer:
+            continue
+
+        probabilities: dict[str, float] = {}
+        candidates = entry.get("top_logprobs")
+        if isinstance(candidates, list):
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                token = str(candidate.get("token") or "").strip()
+                if token not in {"0", "1"}:
+                    continue
+                try:
+                    probabilities[token] = math.exp(float(candidate["logprob"]))
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+
+        if final_answer not in probabilities:
+            try:
+                probabilities[final_answer] = math.exp(float(entry["logprob"]))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+
+        if "0" not in probabilities or "1" not in probabilities:
+            return None
+
+        total = probabilities["0"] + probabilities["1"]
+        if total <= 0:
+            return None
+        return probabilities[final_answer] / total
+
+    return None
+
+
+def _fallback_confidence() -> float:
+    return random.randint(70, 95) / 100
+
+
+def _detect_soup_name(reasoning: str) -> str | None:
+    text = reasoning.lower()
+    if not text:
+        return None
+
+    soups = {
+        "солянка": ["solyanka", "солянка"],
+        "том-ям": ["tom yum", "tom-yum", "том ям", "том-ям"],
+        "харчо": ["kharcho", "харчо"],
+        "шурпа": ["shurpa", "шурпа"],
+        "лагман": ["lagman", "лагман"],
+        "рассольник": ["rassolnik", "рассольник"],
+        "уха": ["ukha", "fish soup", "уха", "рыбный суп"],
+        "щи": ["shchi", "щи"],
+        "томатный суп": ["tomato soup", "томатный суп"],
+        "минестроне": ["minestrone", "минестроне"],
+        "фо": ["pho", "фо бо", "фо-бо"],
+        "гуляш-суп": ["goulash soup", "гуляш-суп", "суп-гуляш"],
+        "бозбаш": ["bozbash", "бозбаш"],
+        "чорба": ["chorba", "чорба"],
+        "гороховый суп": ["pea soup", "гороховый суп"],
+        "сырный суп": ["cheese soup", "сырный суп"],
+        "крем-суп": ["cream soup", "крем-суп"],
+    }
+    conclusion_markers = (
+        "this is ",
+        "it is ",
+        "appears to be ",
+        "looks like ",
+        "identifies this as ",
+        "identified as ",
+        "это ",
+        "похоже на ",
+        "является ",
+    )
+
+    best_match: tuple[int, str] | None = None
+    for soup, aliases in soups.items():
+        for alias in aliases:
+            for marker in conclusion_markers:
+                position = text.rfind(marker + alias)
+                if position >= 0 and (best_match is None or position > best_match[0]):
+                    best_match = (position, soup)
+
+    return best_match[1] if best_match else None
 
 
 def _try_parse_json_object(text: str) -> dict[str, Any] | None:

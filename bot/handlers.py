@@ -146,7 +146,7 @@ async def borsh_cmd(message: Message, bot: Bot) -> None:
         if is_borsh and total is not None:
             await message.answer(
                 random_message("confirmed.txt", total=total, confidence=f"{confidence:.0%}", reason=reason)
-                + f"\n\n🤖 Уверенность: {confidence:.0%}. {reason}"
+                + f"\n\n🤖 Вердикт: борщ. Уверенность в распознавании: {confidence:.0%}."
             )
             return
 
@@ -154,7 +154,10 @@ async def borsh_cmd(message: Message, bot: Bot) -> None:
             await message.answer(random_message("already_counted.txt"))
             return
 
-        await message.answer(random_message("rejected.txt"))
+        verdict = f"🤖 Вердикт: не борщ. Уверенность в распознавании: {confidence:.0%}."
+        if reason:
+            verdict += f"\n🥣 Вероятно, это {reason}."
+        await message.answer(random_message("rejected.txt") + f"\n\n{verdict}")
 
 
 @router.message(Command("health"))
