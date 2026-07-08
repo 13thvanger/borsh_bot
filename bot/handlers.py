@@ -1,6 +1,7 @@
 import logging
 from datetime import timedelta
 
+import httpx
 from aiogram import Bot, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
@@ -131,6 +132,34 @@ async def borsh_cmd(message: Message, bot: Bot) -> None:
         try:
             data_url = await telegram_photo_to_data_url(bot, photo.telegram_file_id)
             is_borsh, confidence, reason, raw_response = await check_borsh_image(data_url)
+        except httpx.TimeoutException as exc:
+            logger.exception(
+                "AI verification timed out: chat_id=%s user_id=%s command_message_id=%s photo_message_id=%s bypass=%s",
+                message.chat.id,
+                message.from_user.id,
+                message.message_id,
+                photo.telegram_message_id,
+                settings.agent_timeout_bypass,
+            )
+            if not settings.agent_timeout_bypass:
+                await message.answer(random_message("agent_error.txt", error=f"{type(exc).__name__}: {exc}"))
+                return
+
+            total = await save_borsh_proof_and_increment(
+                session=session,
+                tg_chat=message.chat,
+                tg_user=message.from_user,
+                photo=photo,
+                command_message_id=message.message_id,
+                confirmed=True,
+                agent_response=f"AI timeout fallback: {type(exc).__name__}: {exc}",
+            )
+            if total is None:
+                await message.answer(random_message("already_counted.txt"))
+                return
+
+            await message.answer(random_message("agent_timeout_bypass.txt", total=total))
+            return
         except Exception as exc:
             logger.exception(
                 "AI verification failed: chat_id=%s user_id=%s command_message_id=%s photo_message_id=%s error=%s",

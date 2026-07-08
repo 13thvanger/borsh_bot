@@ -92,7 +92,14 @@ AGENT_URL=https://bridge-back.admlr.lipetsk.ru/api/v1/chat/completions
 AGENT_API_KEY=CHANGE_ME
 AGENT_MODEL=cifra48/agent
 AGENT_TIMEOUT_SECONDS=60
+AGENT_TIMEOUT_BYPASS=true
 BORSH_PHOTO_WINDOW_MINUTES=15
+```
+
+Если агент не ответил за `AGENT_TIMEOUT_SECONDS` и `AGENT_TIMEOUT_BYPASS=true`, бот засчитает борщ в режиме доверия и сохранит результат для выбранного фото, чтобы его нельзя было засчитать повторно. Чтобы при таймауте не засчитывать борщ, установите:
+
+```env
+AGENT_TIMEOUT_BYPASS=false
 ```
 
 После обновления проекта на сервере:
@@ -146,6 +153,7 @@ AGENT_REQUIRED=true
 - `messages/confirmed.txt` — когда ИИ подтвердил борщ;
 - `messages/rejected.txt` — когда ИИ не подтвердил борщ;
 - `messages/bypass.txt` — когда ИИ-проверка отключена и борщ засчитан без фото;
+- `messages/agent_timeout_bypass.txt` — когда ИИ-агент ушел в таймаут, но борщ засчитан в режиме доверия;
 - `messages/no_photo.txt` — когда фото не найдено;
 - `messages/already_counted.txt` — когда фото уже засчитано ранее;
 - `messages/agent_error.txt` — когда агент вернул ошибку.
