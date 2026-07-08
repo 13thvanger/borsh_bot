@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 
 from aiogram import Bot, Router
@@ -26,6 +27,7 @@ from bot.services import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 HELP_TEXT = """
@@ -130,6 +132,14 @@ async def borsh_cmd(message: Message, bot: Bot) -> None:
             data_url = await telegram_photo_to_data_url(bot, photo.telegram_file_id)
             is_borsh, confidence, reason, raw_response = await check_borsh_image(data_url)
         except Exception as exc:
+            logger.exception(
+                "AI verification failed: chat_id=%s user_id=%s command_message_id=%s photo_message_id=%s error=%s",
+                message.chat.id,
+                message.from_user.id,
+                message.message_id,
+                photo.telegram_message_id,
+                exc,
+            )
             await message.answer(random_message("agent_error.txt", error=f"{type(exc).__name__}: {exc}"))
             return
 

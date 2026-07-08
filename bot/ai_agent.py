@@ -5,6 +5,7 @@ import math
 import mimetypes
 import random
 import re
+import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -147,17 +148,54 @@ async def check_borsh_image(
         ],
     }
 
-    async with httpx.AsyncClient(
-        timeout=settings.agent_timeout_seconds,
-    ) as client:
-        response = await client.post(
-            settings.agent_url,
-            headers=headers,
-            json=payload,
-        )
+    started_at = time.monotonic()
+    logger.info(
+        "AI API request started: model=%s url=%s timeout_seconds=%s data_url_chars=%s",
+        settings.agent_model,
+        settings.agent_url,
+        settings.agent_timeout_seconds,
+        len(data_url),
+    )
 
-        response.raise_for_status()
-        data = response.json()
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.agent_timeout_seconds,
+        ) as client:
+            response = await client.post(
+                settings.agent_url,
+                headers=headers,
+                json=payload,
+            )
+
+            elapsed = time.monotonic() - started_at
+            logger.info(
+                "AI API response received: status=%s elapsed_seconds=%.2f model=%s",
+                response.status_code,
+                elapsed,
+                settings.agent_model,
+            )
+
+            response.raise_for_status()
+            data = response.json()
+    except httpx.TimeoutException:
+        elapsed = time.monotonic() - started_at
+        logger.exception(
+            "AI API timeout: elapsed_seconds=%.2f timeout_seconds=%s model=%s url=%s",
+            elapsed,
+            settings.agent_timeout_seconds,
+            settings.agent_model,
+            settings.agent_url,
+        )
+        raise
+    except httpx.HTTPError:
+        elapsed = time.monotonic() - started_at
+        logger.exception(
+            "AI API request failed: elapsed_seconds=%.2f model=%s url=%s",
+            elapsed,
+            settings.agent_model,
+            settings.agent_url,
+        )
+        raise
 
     logger.info("Agent response: %s", data)
 
