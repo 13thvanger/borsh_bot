@@ -136,7 +136,7 @@ async def borsh_cmd(message: Message, bot: Bot) -> None:
             data_url = await telegram_photo_to_data_url(bot, photo.telegram_file_id)
             is_borsh, confidence, reason, raw_response = await check_borsh_image(data_url)
         except httpx.TimeoutException as exc:
-            logger.exception(
+            logger.warning(
                 "AI verification timed out: chat_id=%s user_id=%s command_message_id=%s photo_message_id=%s bypass=%s",
                 message.chat.id,
                 message.from_user.id,
