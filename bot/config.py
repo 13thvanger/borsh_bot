@@ -1,3 +1,5 @@
+import re
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +14,8 @@ class Settings(BaseSettings):
     agent_required: bool = False
     agent_timeout_bypass: bool = True
     borsh_photo_window_minutes: int = 15
+    bot_admin_ids: str = ""
+    manual_add_borsh_max: int = 1000
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -33,6 +37,18 @@ class Settings(BaseSettings):
         if not missing:
             return ""
         return "не задано: " + ", ".join(missing)
+
+    @property
+    def admin_user_ids(self) -> set[int]:
+        ids: set[int] = set()
+        for item in re.split(r"[\s,;]+", self.bot_admin_ids.strip()):
+            if not item:
+                continue
+            try:
+                ids.add(int(item))
+            except ValueError:
+                continue
+        return ids
 
 
 settings = Settings()

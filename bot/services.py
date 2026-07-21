@@ -76,6 +76,20 @@ async def add_borsh(session: AsyncSession, tg_chat: TgChat, tg_user: TgUser) -> 
     return stat.borsh_count
 
 
+async def add_borsh_to_user(session: AsyncSession, tg_chat: TgChat, user: User, amount: int) -> int:
+    chat = await upsert_chat(session, tg_chat)
+    stat = await get_or_create_stat(session, chat, user)
+
+    now = datetime.now(timezone.utc)
+    stat.borsh_count += amount
+    stat.last_borsh_at = now
+    if stat.first_borsh_at is None:
+        stat.first_borsh_at = now
+    session.add_all(BorshEvent(chat_id=chat.id, user_id=user.id) for _ in range(amount))
+    await session.commit()
+    return stat.borsh_count
+
+
 async def set_custom_username(session: AsyncSession, tg_user: TgUser, username: str) -> str:
     username = username.strip().lstrip("@")
     if not username or len(username) > 64 or " " in username:
@@ -119,6 +133,22 @@ async def find_user_in_chat(session: AsyncSession, tg_chat: TgChat, query: str) 
         .limit(1)
     )
     return result.first()
+
+
+async def find_user(session: AsyncSession, query: str) -> User | None:
+    q = query.strip().lstrip("@")
+    if not q:
+        return None
+
+    conditions = [
+        func.lower(User.telegram_username) == q.lower(),
+        func.lower(User.custom_username) == q.lower(),
+    ]
+    if q.isdigit():
+        conditions.append(User.telegram_user_id == int(q))
+
+    result = await session.execute(select(User).where(or_(*conditions)).limit(1))
+    return result.scalar_one_or_none()
 
 
 async def get_user_stat(session: AsyncSession, tg_chat: TgChat, user: User, stat: ChatUserStat) -> dict:

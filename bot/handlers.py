@@ -11,7 +11,10 @@ from bot.config import settings
 from bot.db import SessionLocal
 from bot.messages import random_message
 from bot.services import (
+    add_borsh,
+    add_borsh_to_user,
     display_name,
+    find_user,
     find_user_in_chat,
     get_or_create_stat,
     get_photo_by_message_id,
@@ -21,7 +24,6 @@ from bot.services import (
     photo_already_confirmed,
     remember_photo_message,
     save_borsh_proof_and_increment,
-    add_borsh,
     set_custom_username,
     upsert_chat,
     upsert_user,
@@ -44,6 +46,7 @@ HELP_TEXT = """
 /username vasya — задать имя для статистики
 /me — моя статистика
 /health — состояние бота, БД и ИИ-проверки
+/addborsh N user — админская команда: добавить N борщей пользователю по Telegram ID или username
 
 Если AGENT_URL и AGENT_API_KEY не заданы, ИИ-проверка отключается и /borsh засчитывает борщ без фото.
 Одно и то же фото нельзя засчитать дважды.
@@ -238,6 +241,52 @@ async def username_cmd(message: Message, command: CommandObject) -> None:
             await message.answer(f"Не получилось: {exc}")
             return
     await message.answer(f"🪪 Имя для борщевой статистики установлено: {username}")
+
+
+@router.message(Command("addborsh"))
+async def addborsh_cmd(message: Message, command: CommandObject) -> None:
+    if not message.from_user:
+        return
+    if message.from_user.id not in settings.admin_user_ids:
+        await message.answer("Нет прав для ручного добавления борщей.")
+        return
+
+    args = (command.args or "").strip().split(maxsplit=1)
+    if len(args) != 2:
+        await message.answer("Использование: /addborsh N user, например /addborsh 3 @ivan")
+        return
+
+    amount_raw, user_query = args
+    try:
+        amount = int(amount_raw)
+    except ValueError:
+        await message.answer("N должно быть целым числом.")
+        return
+
+    if amount <= 0:
+        await message.answer("N должно быть больше 0.")
+        return
+    if amount > settings.manual_add_borsh_max:
+        await message.answer(f"N слишком большое. Максимум: {settings.manual_add_borsh_max}.")
+        return
+
+    async with SessionLocal() as session:
+        user = await find_user(session, user_query)
+        if user is None:
+            await message.answer("Не нашел пользователя бота по Telegram ID или username.")
+            return
+
+        total = await add_borsh_to_user(session, message.chat, user, amount)
+
+    logger.info(
+        "Admin added borsh: admin_user_id=%s chat_id=%s target_user_id=%s amount=%s total=%s",
+        message.from_user.id,
+        message.chat.id,
+        user.telegram_user_id,
+        amount,
+        total,
+    )
+    await message.answer(f"Добавлено: +{amount} для {display_name(user)}. Теперь в этом чате: {total}.")
 
 
 @router.message(Command("stat"))
