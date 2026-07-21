@@ -12,7 +12,7 @@ Telegram-бот для групповых чатов: считает съеде�
 - `/stat telegram_user_id` — подробная статистика по Telegram ID.
 - `/username name` — задать локальный username для статистики.
 - `/me` — показать свою статистику.
-- `/addborsh N user` — админская команда: добавить N борщей пользователю по Telegram ID или username.
+- `/addborsh N user` — админская команда: изменить число борщей пользователя на N по Telegram ID или username, например `/addborsh -1 @ivan`.
 - `/help` — справка.
 
 ## Запуск
@@ -38,7 +38,7 @@ DATABASE_URL=postgresql+asyncpg://borsh:сложный_пароль@db:5432/bors
 
 Важно: внутри Docker Compose host базы данных — `db`, а не `localhost`.
 
-`BOT_ADMIN_IDS` — Telegram ID админов бота через запятую, пробел или `;`. Только эти пользователи могут выполнять `/addborsh`.
+`BOT_ADMIN_IDS` — Telegram ID админов бота через запятую, пробел или `;`. Только эти пользователи могут выполнять `/addborsh`. `N` может быть положительным или отрицательным; счетчик нельзя увести ниже нуля.
 
 4. Запустите:
 

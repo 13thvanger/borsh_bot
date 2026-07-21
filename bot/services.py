@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from aiogram.types import Chat as TgChat, User as TgUser
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models import BorshEvent, BorshProof, Chat, ChatUserStat, PhotoMessage, User
@@ -76,16 +76,49 @@ async def add_borsh(session: AsyncSession, tg_chat: TgChat, tg_user: TgUser) -> 
     return stat.borsh_count
 
 
-async def add_borsh_to_user(session: AsyncSession, tg_chat: TgChat, user: User, amount: int) -> int:
+async def adjust_borsh_for_user(session: AsyncSession, tg_chat: TgChat, user: User, amount: int) -> int:
     chat = await upsert_chat(session, tg_chat)
     stat = await get_or_create_stat(session, chat, user)
 
+    if stat.borsh_count + amount < 0:
+        raise ValueError("нельзя убрать больше борщей, чем есть у пользователя в этом чате")
+
     now = datetime.now(timezone.utc)
     stat.borsh_count += amount
-    stat.last_borsh_at = now
-    if stat.first_borsh_at is None:
-        stat.first_borsh_at = now
-    session.add_all(BorshEvent(chat_id=chat.id, user_id=user.id) for _ in range(amount))
+
+    if amount > 0:
+        stat.last_borsh_at = now
+        if stat.first_borsh_at is None:
+            stat.first_borsh_at = now
+        session.add_all(BorshEvent(chat_id=chat.id, user_id=user.id) for _ in range(amount))
+    else:
+        event_ids = (
+            select(BorshEvent.id)
+            .where(BorshEvent.chat_id == chat.id, BorshEvent.user_id == user.id)
+            .order_by(BorshEvent.created_at.desc(), BorshEvent.id.desc())
+            .limit(abs(amount))
+            .subquery()
+        )
+        await session.execute(
+            delete(BorshEvent)
+            .where(BorshEvent.id.in_(select(event_ids.c.id)))
+            .execution_options(synchronize_session=False)
+        )
+
+        if stat.borsh_count == 0:
+            stat.first_borsh_at = None
+            stat.last_borsh_at = None
+        else:
+            bounds = await session.execute(
+                select(func.min(BorshEvent.created_at), func.max(BorshEvent.created_at)).where(
+                    BorshEvent.chat_id == chat.id,
+                    BorshEvent.user_id == user.id,
+                )
+            )
+            first_borsh_at, last_borsh_at = bounds.one()
+            stat.first_borsh_at = first_borsh_at
+            stat.last_borsh_at = last_borsh_at
+
     await session.commit()
     return stat.borsh_count
 
